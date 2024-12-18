@@ -1,13 +1,13 @@
-import pandas as pd
+import warnings
+warnings.filterwarnings('ignore')
+
 import numpy as np
-from datetime import datetime
+import pandas as pd
 import pandas_ta as ta
+import matplotlib.pyplot as plt
 import yfinance as yf
 from datetime import timedelta, date
 from dateutil.relativedelta import relativedelta
- 
-import warnings
-warnings.filterwarnings("ignore")
 
 ticker = input("Enter the ticker of stock to predict: ")
 epochs = int(input("Enter # of epochs: "))
@@ -15,128 +15,123 @@ years = int(input("Enter # of years to train on: "))
 stock = yf.Ticker(ticker)
 current_date = date.today()
 past_date = current_date - relativedelta(years=years)
-data = stock.history(start=past_date, end=current_date, interval="1d")
-data['Date'] = data.index
+df = stock.history(start=past_date, end=current_date, interval="1d")
 
-macd = data.ta.macd(close='close', fast=12, slow=26, signal=9, append=True)['MACD_12_26_9'].dropna()
-data = data.drop(data.index[range(25)])
-data['MACD'] = macd.values
+print(df.head())
+df['Date'] = df.index
 
-close_data = data.filter(['Close'])
+# df = pd.read_csv('AAPL.csv')
+df['Date'] = pd.to_datetime(df['Date'])
+
+#df = df.drop(['Adj Close'], axis=1)
+
+macd_result = df.ta.macd(close='Close', fast=12, slow=26, signal=9, append=True)
+df = df.dropna(subset=['MACD_12_26_9', 'MACDs_12_26_9', 'MACDh_12_26_9'])
+df.rename(columns={'MACD_12_26_9': 'MACD', 'MACDs_12_26_9': 'MACDs', 'MACDh_12_26_9': 'MACDh'}, inplace=True)
+
+close_data = df.filter(['Close'])
 dataset = close_data.values
-training = int(np.ceil(len(dataset) * .95))
 
-macd_data = data.filter(['MACD'])
+macd_data = df.filter(['MACD', 'MACDh', 'MACDs'])
 macdfeatures = macd_data.values
+
+steps = 60
+
+training = len(dataset) - 300
+testing = len(dataset) - steps
+
+print((training, testing))
 
 from sklearn.preprocessing import MinMaxScaler
  
 scaler = MinMaxScaler(feature_range=(0, 1))
+
 scaled_data = scaler.fit_transform(dataset)
 scaled_macd = scaler.fit_transform(macdfeatures)
 
-timesteps = 60
+train_scaled = scaled_data[:training]
+train_macd = scaled_macd[:training]
 
-train_data = scaled_data[0:int(training), :] 
-macd_train = scaled_macd[0:int(training), :]
-x_train = []
-y_train = []
-macdfeature = []
-macdfeature1 = []
+pred_scaled = scaled_data[training:testing]
+pred_macd = scaled_macd[training:testing]
 
-for i in range(timesteps, len(train_data)):
-    x_train.append(train_data[i-timesteps:i, :])
-    y_train.append(train_data[i]) 
-    macdfeature.append(macd_train[i-timesteps:i,0])
-    macdfeature1.append(macd_train[i])
+test = dataset[testing:]
 
-x_train, y_train, macdfeature = np.array(x_train), np.array(y_train), np.array(macdfeature)
-x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
-macdfeature = np.reshape(macdfeature, (macdfeature.shape[0], macdfeature.shape[1], 1))
+other_labels = dataset[steps+1:training+1]
 
-import tensorflow as tf
+train_window = []
+macd_wind = []
+for i in range(steps, training):
+    train_window.append(train_scaled[i-steps:i, :])
+    macd_wind.append(train_macd[i-steps:i, :])
+
+pred_window = []
+pred_macd_wind = []
+for i in range(steps, testing - training):
+    pred_window.append(pred_scaled[i-steps:i, :])
+    pred_macd_wind.append(pred_macd[i-steps:i, :])
+
+train_window, macd_wind, pred_macd, pred_scaled, other_labels, pred_window, pred_macd_wind = np.array(train_window), np.array(macd_wind), np.array(pred_macd), np.array(pred_scaled), np.array(other_labels), np.array(pred_window), np.array(pred_macd_wind)
+
+print(macd_wind.shape)
+print(train_window.shape)
+# print(labels.shape)
+print(other_labels.shape)
+
+train_window = np.reshape(train_window, (train_window.shape[0], train_window.shape[1], 1))
+macd_wind = np.reshape(macd_wind, (macd_wind.shape[0], macd_wind.shape[1], 3))
+
+pred_window = np.reshape(pred_window, (pred_window.shape[0], pred_window.shape[1], 1))
+pred_macd_wind = np.reshape(pred_macd_wind, (pred_macd_wind.shape[0], pred_macd_wind.shape[1], 3))
+
+import tensorflow as tf 
 from tensorflow import keras
-from keras.layers import (Dropout, Flatten, Dense, Input, Concatenate, LSTM)
-from keras.models import Model, Sequential
 
-n = 1 
-def quantile_loss(q, y, y_p):
-        e = y-y_p
-        return tf.keras.backend.mean(tf.keras.backend.maximum(q*e, (q-1)*e))
-
-# quantile = float(input("Enter float value for quantile loss: "))
-
-def network():
-    sequence = Input(shape=(timesteps,1), name='Sequence')
-    features = Input(shape=(timesteps,1), name='Features')
-
-    lstm = Sequential()
-    lstm.add(LSTM(units=50, return_sequences=True, input_shape=(timesteps, 1)))
-    lstm.add(Dropout(0.2))
-    lstm.add(LSTM(units=50, return_sequences=True))
-    lstm.add(Dropout(0.2))
-    lstm.add(LSTM(units=50, return_sequences=True))
-    lstm.add(Dropout(0.2))
-    lstm.add(LSTM(units=50))
-    lstm.add(Dropout(0.2))
-
-    part1 = lstm(sequence)
-
-    flat_features = Flatten()(features)
-
-    merged = Concatenate(axis=-1)([part1, flat_features])
+model = keras.models.Sequential() 
+model.add(keras.layers.LSTM(units=64, 
+                            return_sequences=True, 
+                            input_shape=(train_window.shape[1], 1))) 
+model.add(keras.layers.LSTM(units=64))
+model.add(keras.layers.Dense(64))
+model.add(keras.layers.Dropout(0.5)) 
+model.add(keras.layers.Dense(1))
 
 
-    final = Dense(512, activation='relu')(merged)
-    final = Dropout(0.5)(final)
-    final = Dense(1)(final)
+model.compile(optimizer='adam', 
+              loss='mean_squared_error') 
+history = model.fit([train_window, macd_wind], 
+                    other_labels, 
+                    epochs=epochs) 
 
-    model = Model(inputs=[sequence, features], outputs=[final])
+print(pred_macd_wind.shape)
+print(pred_window.shape)
+print(test.shape)
 
-    #model.compile(loss=lambda y, y_p: quantile_loss(quantile, y, y_p), optimizer = 'adam')
-    model.compile(loss='mean_squared_error', optimizer = 'adam')
+predictions = model.predict([pred_window, pred_macd_wind])
+diff = dataset[testing-1] - predictions[0]
+predictions = [x + diff for x in predictions]
 
-    return model
+future = predictions[60:]
 
-m = network()
-m.fit([x_train, macdfeature], y_train, epochs=epochs, batch_size=32)
+pred1 = predictions[:60]
 
-test_data = scaled_data[training-60:, :]
-y_test = dataset[training:, :]
-
-macd_test = scaled_macd[training-timesteps:, :]
-x_test = []
-macd_test_feature = []
-
-for i in range(timesteps, len(test_data)):
-    x_test.append(test_data[i-timesteps:i, 0])
-    macd_test_feature.append(macd_test[i-timesteps:i, 0])
-
-x_test = np.array(x_test)
-x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
-
-macd_test_feature = np.array(macd_test_feature)
-macd_test_feature = np.reshape(macd_test_feature, (macd_test_feature.shape[0], macd_test_feature.shape[1], 1))
-
-predictions = m.predict([x_test, macd_test_feature])
-
-avgval = round(y_test.mean() / predictions.mean(), 2)
-predictions = list(map(lambda x: x * avgval, predictions))
-
-mse = np.mean(((predictions - y_test) ** 2))
+try:
+    mse = np.mean(((predictions - test) ** 2))
+    print('Good')
+except:
+    mse = np.mean(((pred1 - test) ** 2))
 print("MSE", mse)
 print("RMSE", np.sqrt(mse))
 
-
-train = data[:training]
-test = data[training:]
-test['Predictions'] = predictions
+train = df[:testing]
+test = df[testing:]
+test['Predictions_test'] = pred1
 
 import matplotlib.pyplot as plt
 title = ticker + " Stock Close Price"
 plt.figure(figsize=(10, 8))
 plt.plot(train['Date'], train['Close'])
-plt.plot(test['Date'], test[['Close', 'Predictions']])
+plt.plot(test['Date'], test[['Close', 'Predictions_test']])
 plt.title(title)
 plt.xlabel('Date')
 plt.ylabel("Close")
