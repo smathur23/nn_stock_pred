@@ -23,7 +23,6 @@ df['Date'] = df.index
 # df = pd.read_csv('AAPL.csv')
 df['Date'] = pd.to_datetime(df['Date'])
 
-#df = df.drop(['Adj Close'], axis=1)
 
 macd_result = df.ta.macd(close='Close', fast=12, slow=26, signal=9, append=True)
 df = df.dropna(subset=['MACD_12_26_9', 'MACDs_12_26_9', 'MACDh_12_26_9'])
@@ -73,10 +72,6 @@ for i in range(steps, testing - training):
 
 train_window, macd_wind, pred_macd, pred_scaled, other_labels, pred_window, pred_macd_wind = np.array(train_window), np.array(macd_wind), np.array(pred_macd), np.array(pred_scaled), np.array(other_labels), np.array(pred_window), np.array(pred_macd_wind)
 
-print(macd_wind.shape)
-print(train_window.shape)
-# print(labels.shape)
-print(other_labels.shape)
 
 train_window = np.reshape(train_window, (train_window.shape[0], train_window.shape[1], 1))
 macd_wind = np.reshape(macd_wind, (macd_wind.shape[0], macd_wind.shape[1], 3))
@@ -87,27 +82,22 @@ pred_macd_wind = np.reshape(pred_macd_wind, (pred_macd_wind.shape[0], pred_macd_
 import tensorflow as tf 
 from tensorflow import keras
 
-model = keras.models.Sequential() 
-model.add(keras.layers.LSTM(units=64, 
-                            return_sequences=True, 
-                            input_shape=(train_window.shape[1], 1))) 
+combined_features = np.concatenate([train_window, macd_wind], axis=-1)
+
+model = keras.models.Sequential()
+model.add(keras.layers.LSTM(units=64,
+                            return_sequences=True,
+                            input_shape=(combined_features.shape[1], combined_features.shape[2])))
 model.add(keras.layers.LSTM(units=64))
 model.add(keras.layers.Dense(64))
-model.add(keras.layers.Dropout(0.5)) 
+model.add(keras.layers.Dropout(0.5))
 model.add(keras.layers.Dense(1))
 
+model.compile(optimizer='adam', loss='mean_squared_error')
+history = model.fit(combined_features, other_labels, epochs=epochs)
 
-model.compile(optimizer='adam', 
-              loss='mean_squared_error') 
-history = model.fit([train_window, macd_wind], 
-                    other_labels, 
-                    epochs=epochs) 
-
-print(pred_macd_wind.shape)
-print(pred_window.shape)
-print(test.shape)
-
-predictions = model.predict([pred_window, pred_macd_wind])
+combined_preds = np.concatenate([pred_window, pred_macd_wind], axis=-1)
+predictions = model.predict(combined_preds)
 diff = dataset[testing-1] - predictions[0]
 predictions = [x + diff for x in predictions]
 
